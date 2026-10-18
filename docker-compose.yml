@@ -1,0 +1,66 @@
+name: ai-homework-helper
+
+x-backend-env: &backend-env
+  ENVIRONMENT: local
+  LOG_LEVEL: INFO
+  LOG_JSON: "true"
+  DATABASE_URL: postgresql+asyncpg://tutor:tutor@db:5432/tutor
+  # Defaults let `docker compose up` work with no .env and no API key.
+  JWT_SECRET: ${JWT_SECRET:-local-development-secret-do-not-use-in-production}
+  AUTH_PASSWORD: ${AUTH_PASSWORD:-homework}
+  LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+  LLM_MODEL: ${LLM_MODEL:-meta-llama/Meta-Llama-3-8B-Instruct}
+  SELF_CHECK_MIN_CONFIDENCE: ${SELF_CHECK_MIN_CONFIDENCE:-0.6}
+  MAX_SOLVE_RETRIES: ${MAX_SOLVE_RETRIES:-2}
+  MAX_GRAPH_STEPS: ${MAX_GRAPH_STEPS:-14}
+  HISTORY_WINDOW: ${HISTORY_WINDOW:-8}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tutor
+      POSTGRES_PASSWORD: tutor
+      POSTGRES_DB: tutor
+    ports:
+      - "5434:5432" # 5434 on the host to avoid clashing with a local postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tutor -d tutor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *backend-env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the backend is reachable by service name.
+      API_BASE_URL: http://api:8000
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-homework}
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
