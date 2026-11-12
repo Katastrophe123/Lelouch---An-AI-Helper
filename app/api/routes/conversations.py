@@ -11,6 +11,7 @@ from fastapi import APIRouter, Path, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import (
+    AgentServiceDep,
     ConversationRepositoryDep,
     ConversationServiceDep,
     CurrentUserDep,
@@ -18,9 +19,10 @@ from app.api.deps import (
     PaginationDep,
     TutorServiceDep,
 )
-from app.api.errors import NotFoundError
+from app.api.errors import BadRequestError, NotFoundError
+from app.db.models import Conversation
 from app.logging_config import get_logger
-from app.models.enums import ConversationStatus, Subject
+from app.models.enums import ConversationMode, ConversationStatus, Subject
 from app.models.schemas import (
     ConversationCreate,
     ConversationDetail,
@@ -29,12 +31,20 @@ from app.models.schemas import (
     Page,
     TurnResponse,
 )
+from app.services.agent_service import AgentService
 from app.services.conversation_service import message_to_response
-from app.services.tutor_service import ConversationNotFoundError
+from app.services.tutor_service import ConversationNotFoundError, TutorService
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+
+def _engine(
+    conversation: Conversation, tutor: TutorService, agent: AgentService
+) -> TutorService | AgentService:
+    """Each conversation is answered by the engine it was created with."""
+    return agent if conversation.mode == ConversationMode.AGENT.value else tutor
 
 
 def _not_found(conversation_id: uuid.UUID) -> NotFoundError:
@@ -49,16 +59,34 @@ def _not_found(conversation_id: uuid.UUID) -> NotFoundError:
     response_model=ConversationDetail,
     status_code=status.HTTP_201_CREATED,
     summary="Start a conversation",
-    responses={401: {"description": "Missing or invalid token"}},
+    responses={
+        400: {"description": "Unknown agent model"},
+        401: {"description": "Missing or invalid token"},
+    },
 )
 async def create_conversation(
     payload: ConversationCreate,
     user: CurrentUserDep,
     service: ConversationServiceDep,
+    agent: AgentServiceDep,
 ) -> ConversationDetail:
-    """Create an empty conversation owned by the authenticated learner."""
+    """Create an empty conversation owned by the authenticated learner.
+
+    ``mode: "agent"`` makes it a Claude agent thread (tools, MCP, your
+    documents); the default ``"tutor"`` is the self-checking LangGraph tutor.
+    """
+    agent_model = None
+    if payload.mode is ConversationMode.AGENT:
+        try:
+            agent_model = agent.resolve_model(payload.model)
+        except ValueError as exc:
+            raise BadRequestError(str(exc), details={"model": payload.model}) from exc
     conversation = await service.create(
-        user_id=user.id, title=payload.title, subject=payload.subject
+        user_id=user.id,
+        title=payload.title,
+        subject=payload.subject,
+        mode=payload.mode,
+        agent_model=agent_model,
     )
     logger.info("conversation_created", conversation_id=str(conversation.id))
     return conversation
@@ -125,6 +153,7 @@ async def create_message(
     user: CurrentUserDep,
     service: ConversationServiceDep,
     tutor: TutorServiceDep,
+    agent: AgentServiceDep,
     repository: ConversationRepositoryDep,
     conversation_id: Annotated[uuid.UUID, Path(description="Conversation identifier")],
 ) -> TurnResponse:
@@ -138,7 +167,7 @@ async def create_message(
     except ConversationNotFoundError as exc:
         raise _not_found(conversation_id) from exc
 
-    result = await tutor.run_turn(
+    result = await _engine(conversation, tutor, agent).run_turn(
         conversation=conversation, content=payload.content, repository=repository
     )
     return TurnResponse(
@@ -166,6 +195,7 @@ async def stream_message(
     user: CurrentUserDep,
     service: ConversationServiceDep,
     tutor: TutorServiceDep,
+    agent: AgentServiceDep,
     database: DatabaseDep,
     conversation_id: Annotated[uuid.UUID, Path(description="Conversation identifier")],
 ) -> EventSourceResponse:
@@ -179,12 +209,13 @@ async def stream_message(
     persisted message ids. Failures arrive as one ``error`` event.
     """
     try:
-        await service.require_conversation(conversation_id, user_id=user.id)
+        conversation = await service.require_conversation(conversation_id, user_id=user.id)
     except ConversationNotFoundError as exc:
         raise _not_found(conversation_id) from exc
+    engine = _engine(conversation, tutor, agent)
 
     async def event_stream() -> AsyncIterator[dict[str, str]]:
-        async for event in tutor.stream_turn(
+        async for event in engine.stream_turn(
             database=database,
             conversation_id=conversation_id,
             user_id=user.id,

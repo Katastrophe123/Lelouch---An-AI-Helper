@@ -11,18 +11,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import auth, conversations, health
+from app.api.routes import agent, auth, conversations, documents, health
+from app.assistant.runner import auth_mode, build_agent_runner
 from app.config import Settings, get_settings
 from app.db.session import Database
+from app.knowledge.embeddings import build_embedder
+from app.knowledge.service import KnowledgeService
 from app.llm.base import LLMClient
 from app.llm.factory import build_llm_client
 from app.logging_config import configure_logging, get_logger
+from app.services.agent_service import AgentService
 from app.services.tutor_service import TutorService
 
 logger = get_logger(__name__)
 
 DESCRIPTION = """
-A LangGraph tutoring agent behind a stateless HTTP API.
+A personal AI assistant with two engines behind one HTTP API:
+
+* **Agent mode** - Claude (Opus 5.5 / Fable 5.2) via the Claude Agent SDK, with
+  deep thinking, web research, a Playwright browser, your MCP servers, and
+  search over documents you upload (`/documents`).
+* **Tutor mode** - the original LangGraph tutor, described below.
 
 Each question runs **understand -> solve -> self-check -> explain**. If the
 self-check rejects the answer the graph retries solving (bounded), and once
@@ -45,6 +54,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = database
     app.state.llm = llm
     app.state.tutor_service = TutorService(settings=settings, llm=llm)
+    knowledge = KnowledgeService(
+        settings=settings, database=database, embedder=build_embedder(settings)
+    )
+    app.state.knowledge_service = knowledge
+    app.state.agent_service = AgentService(
+        settings=settings, runner=build_agent_runner(settings), knowledge=knowledge
+    )
 
     logger.info(
         "application_started",
@@ -54,6 +70,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_provider=settings.llm_provider,
         llm_model=llm.model,
         streaming=llm.supports_streaming,
+        agent_backend=settings.agent_backend,
+        agent_model=settings.agent_model,
+        agent_auth=auth_mode(),
     )
     try:
         yield
@@ -94,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(conversations.router)
+    app.include_router(agent.router)
+    app.include_router(documents.router)
 
     return app
 

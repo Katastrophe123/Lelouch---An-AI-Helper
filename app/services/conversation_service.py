@@ -8,7 +8,7 @@ import uuid
 from app.db.models import Conversation, Message
 from app.db.repository import ConversationRepository
 from app.models.domain import StepRecord
-from app.models.enums import ConversationStatus, Subject
+from app.models.enums import ConversationMode, ConversationStatus, Subject
 from app.models.schemas import (
     ConversationDetail,
     ConversationSummary,
@@ -48,6 +48,8 @@ def conversation_to_detail(conversation: Conversation) -> ConversationDetail:
         title=conversation.title,
         subject=conversation.subject,  # type: ignore[arg-type]
         status=conversation.status,  # type: ignore[arg-type]
+        mode=conversation.mode,  # type: ignore[arg-type]
+        agent_model=conversation.agent_model,
         message_count=conversation.message_count,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
@@ -67,9 +69,11 @@ class ConversationService:
         user_id: uuid.UUID,
         title: str | None = None,
         subject: Subject | None = None,
+        mode: ConversationMode = ConversationMode.TUTOR,
+        agent_model: str | None = None,
     ) -> ConversationDetail:
         conversation = await self._repository.create_conversation(
-            user_id=user_id, title=title, subject=subject
+            user_id=user_id, title=title, subject=subject, mode=mode, agent_model=agent_model
         )
         await self._repository.refresh_messages(conversation)
         return conversation_to_detail(conversation)

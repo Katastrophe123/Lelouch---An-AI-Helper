@@ -16,10 +16,20 @@ x-backend-env: &backend-env
   MAX_SOLVE_RETRIES: ${MAX_SOLVE_RETRIES:-2}
   MAX_GRAPH_STEPS: ${MAX_GRAPH_STEPS:-14}
   HISTORY_WINDOW: ${HISTORY_WINDOW:-8}
+  # The real agent signs in through the `claude` CLI on your machine, which a
+  # container cannot see, so Docker defaults to the offline demo agent. For
+  # the real one, run the API natively (README "Agent mode"), or set
+  # AGENT_BACKEND=claude_sdk together with ANTHROPIC_API_KEY.
+  AGENT_BACKEND: ${AGENT_BACKEND:-fake}
+  AGENT_MODEL: ${AGENT_MODEL:-claude-opus-5-5}
+  AGENT_ENABLE_PLAYWRIGHT: ${AGENT_ENABLE_PLAYWRIGHT:-false}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-fastembed}
 
 services:
   db:
-    image: postgres:16-alpine
+    # PostgreSQL 16 with the pgvector extension, for the knowledge base.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: tutor
       POSTGRES_PASSWORD: tutor

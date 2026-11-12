@@ -16,6 +16,8 @@ from app.config import Settings, get_settings
 from app.core.security import AuthError, decode_access_token
 from app.db.repository import ConversationRepository, UserRepository
 from app.db.session import Database
+from app.knowledge.service import KnowledgeService
+from app.services.agent_service import AgentService
 from app.services.conversation_service import ConversationService
 from app.services.tutor_service import TutorService
 
@@ -76,6 +78,20 @@ def get_tutor_service(request: Request) -> TutorService:
     return service
 
 
+def get_agent_service(request: Request) -> AgentService:
+    service: AgentService | None = getattr(request.app.state, "agent_service", None)
+    if service is None:  # pragma: no cover - would mean a broken lifespan
+        raise RuntimeError("AgentService is not initialised on app state")
+    return service
+
+
+def get_knowledge_service(request: Request) -> KnowledgeService:
+    service: KnowledgeService | None = getattr(request.app.state, "knowledge_service", None)
+    if service is None:  # pragma: no cover - would mean a broken lifespan
+        raise RuntimeError("KnowledgeService is not initialised on app state")
+    return service
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_app_settings)],
@@ -119,4 +135,6 @@ UserRepositoryDep = Annotated[UserRepository, Depends(get_user_repository)]
 ConversationRepositoryDep = Annotated[ConversationRepository, Depends(get_conversation_repository)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 TutorServiceDep = Annotated[TutorService, Depends(get_tutor_service)]
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
+KnowledgeServiceDep = Annotated[KnowledgeService, Depends(get_knowledge_service)]
 PaginationDep = Annotated[PaginationParams, Depends(PaginationParams)]

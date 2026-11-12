@@ -1,3 +1,3 @@
-"""AI Homework Helper backend package."""
+"""Lelouch - An AI Helper: backend package."""
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"

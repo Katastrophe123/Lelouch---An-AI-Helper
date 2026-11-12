@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from app import __version__
 from app.api.deps import SettingsDep, get_database
+from app.assistant.runner import auth_mode
 from app.db.session import Database
 from app.models.schemas import HealthResponse
 
@@ -44,4 +45,7 @@ async def health(
         database="up" if db_ok else "down",
         llm_provider=settings.llm_provider,
         llm_model=getattr(llm, "model", settings.llm_model),
+        agent_backend=settings.agent_backend,
+        agent_model=settings.agent_model,
+        agent_auth=auth_mode() if settings.agent_backend == "claude_sdk" else "none",
     )

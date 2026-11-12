@@ -5,18 +5,21 @@ All SQL lives here so services stay free of query construction.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import Conversation, Message, User
+from app.db.models import Conversation, Document, DocumentChunk, Message, User
 from app.models.domain import HistoryTurn, StepRecord
 from app.models.enums import (
     AnswerStatus,
+    ConversationMode,
     ConversationStatus,
     FallbackReason,
     MessageRole,
@@ -62,12 +65,16 @@ class ConversationRepository:
         user_id: uuid.UUID,
         title: str | None = None,
         subject: Subject | None = None,
+        mode: ConversationMode = ConversationMode.TUTOR,
+        agent_model: str | None = None,
     ) -> Conversation:
         conversation = Conversation(
             user_id=user_id,
             title=(title or "New conversation")[:200],
             subject=subject.value if subject else None,
             status=ConversationStatus.ACTIVE.value,
+            mode=mode.value,
+            agent_model=agent_model if mode is ConversationMode.AGENT else None,
             message_count=0,
         )
         self._session.add(conversation)
@@ -229,3 +236,137 @@ class ConversationRepository:
         )
         rows = await self._session.execute(stmt)
         return {status: int(count) for status, count in rows.all() if status}
+
+
+# --------------------------------------------------------------------------- #
+# Knowledge base
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
+class ChunkHit:
+    """One retrieved passage with its cosine similarity to the query."""
+
+    document_id: uuid.UUID
+    filename: str
+    chunk_index: int
+    content: str
+    score: float
+
+
+def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norm if norm else 0.0
+
+
+class DocumentRepository:
+    """Documents, their embedded chunks, and user-scoped similarity search."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_document(
+        self,
+        *,
+        user_id: uuid.UUID,
+        filename: str,
+        content_type: str | None,
+        size_bytes: int,
+        chunks: Sequence[str],
+        embeddings: Sequence[Sequence[float]],
+    ) -> Document:
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings must be the same length")
+        document = Document(
+            user_id=user_id,
+            filename=filename[:255],
+            content_type=content_type,
+            size_bytes=size_bytes,
+            char_count=sum(len(chunk) for chunk in chunks),
+            chunk_count=len(chunks),
+        )
+        self._session.add(document)
+        await self._session.flush()
+        self._session.add_all(
+            DocumentChunk(
+                document_id=document.id,
+                user_id=user_id,
+                chunk_index=index,
+                content=chunk,
+                embedding=[float(value) for value in vector],
+            )
+            for index, (chunk, vector) in enumerate(zip(chunks, embeddings, strict=True))
+        )
+        await self._session.flush()
+        return document
+
+    async def list_documents(self, *, user_id: uuid.UUID) -> Sequence[Document]:
+        stmt = (
+            select(Document)
+            .where(Document.user_id == user_id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+        )
+        return (await self._session.execute(stmt)).scalars().all()
+
+    async def get_document(self, document_id: uuid.UUID, *, user_id: uuid.UUID) -> Document | None:
+        stmt = select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def delete_document(self, document_id: uuid.UUID, *, user_id: uuid.UUID) -> bool:
+        document = await self.get_document(document_id, user_id=user_id)
+        if document is None:
+            return False
+        # Delete chunks explicitly: SQLite does not enforce ON DELETE CASCADE
+        # unless foreign keys are switched on, and the tests run on SQLite.
+        chunks = await self._session.execute(
+            select(DocumentChunk).where(DocumentChunk.document_id == document.id)
+        )
+        for chunk in chunks.scalars():
+            await self._session.delete(chunk)
+        await self._session.delete(document)
+        await self._session.flush()
+        return True
+
+    async def search(
+        self, *, user_id: uuid.UUID, embedding: Sequence[float], top_k: int
+    ) -> list[ChunkHit]:
+        """Nearest chunks to ``embedding`` among this user's documents only."""
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "postgresql":
+            distance = DocumentChunk.embedding.cosine_distance(list(embedding)).label("distance")
+            stmt = (
+                select(DocumentChunk, Document.filename, distance)
+                .join(Document, Document.id == DocumentChunk.document_id)
+                .where(DocumentChunk.user_id == user_id)
+                .order_by(distance)
+                .limit(top_k)
+            )
+            rows = (await self._session.execute(stmt)).all()
+            return [
+                ChunkHit(
+                    document_id=chunk.document_id,
+                    filename=filename,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    score=1.0 - float(dist),
+                )
+                for chunk, filename, dist in rows
+            ]
+
+        # Portable fallback (SQLite in tests): score in Python.
+        stmt = (
+            select(DocumentChunk, Document.filename)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(DocumentChunk.user_id == user_id)
+        )
+        scored = [
+            ChunkHit(
+                document_id=chunk.document_id,
+                filename=filename,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                score=cosine_similarity(embedding, chunk.embedding),
+            )
+            for chunk, filename in (await self._session.execute(stmt)).all()
+        ]
+        scored.sort(key=lambda hit: hit.score, reverse=True)
+        return scored[:top_k]

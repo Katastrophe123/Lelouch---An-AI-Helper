@@ -36,9 +36,21 @@ class AnswerStatus(StrEnum):
     """Terminal state of one tutoring turn."""
 
     PENDING = "pending"
+    #: Agent-mode turn that finished normally. Deliberately not "verified":
+    #: agent answers are not passed through the tutor's self-check graph.
+    COMPLETED = "completed"
     VERIFIED = "verified"
     UNVERIFIED = "unverified"
     FAILED = "failed"
+
+
+class ConversationMode(StrEnum):
+    """Which engine answers a conversation."""
+
+    #: The original LangGraph tutor: understand -> solve -> self-check -> explain.
+    TUTOR = "tutor"
+    #: The Claude Agent SDK agent with tools, MCP servers and your documents.
+    AGENT = "agent"
 
 
 class ConversationStatus(StrEnum):
@@ -59,6 +71,12 @@ class NodeName(StrEnum):
     SELF_CHECK = "self_check"
     EXPLAIN = "explain"
     FALLBACK = "fallback"
+
+    # Agent-mode step kinds. The specific tool lives in the step's output.
+    AGENT_START = "agent_start"
+    THINKING = "thinking"
+    TOOL = "tool"
+    ANSWER = "answer"
 
 
 class RoutingDecision(StrEnum):

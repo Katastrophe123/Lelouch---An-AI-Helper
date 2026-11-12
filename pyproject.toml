@@ -1,7 +1,7 @@
 [project]
 name = "ai-homework-helper"
-version = "2.0.0"
-description = "LangGraph tutoring agent with a FastAPI backend, PostgreSQL persistence and a Streamlit client"
+version = "3.0.0"
+description = "Lelouch: a Claude Agent SDK assistant (research, browser, MCP, your documents) plus a self-checking LangGraph tutor, behind FastAPI + PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -22,6 +22,14 @@ dependencies = [
     "pyjwt>=2.9",
     "sse-starlette>=2.1",
     "structlog>=24.4",
+    # Agent mode
+    "claude-agent-sdk>=0.2.170",
+    # Knowledge base
+    "pgvector>=0.5",
+    "fastembed>=0.9",
+    "pypdf>=6.0",
+    "python-docx>=1.2",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +68,9 @@ ignore = ["B008"]
 "alembic/*" = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12: numpy (via pgvector/fastembed) ships stubs using 3.12 syntax. The
+# runtime floor is still 3.11 (ruff target-version, CI matrix).
+python_version = "3.12"
 plugins = ["pydantic.mypy"]
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -70,7 +80,7 @@ strict_equality = true
 exclude = ["alembic/versions/", "^legacy/", "^build/"]
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*", "streamlit.*", "sse_starlette.*", "scripts.*"]
+module = ["langgraph.*", "streamlit.*", "sse_starlette.*", "scripts.*", "pgvector.*", "fastembed.*", "docx.*"]
 ignore_missing_imports = true
 disallow_untyped_defs = false
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import (
     AnswerStatus,
+    ConversationMode,
     ConversationStatus,
     Difficulty,
     FallbackReason,
@@ -82,6 +83,9 @@ class ConversationCreate(BaseModel):
 
     title: Annotated[str | None, Field(default=None, max_length=200)] = None
     subject: Subject | None = None
+    mode: ConversationMode = ConversationMode.TUTOR
+    #: Agent mode only. Must be one of ``AGENT_MODELS``; defaults to ``AGENT_MODEL``.
+    model: Annotated[str | None, Field(default=None, max_length=64)] = None
 
 
 class MessageCreate(BaseModel):
@@ -142,6 +146,8 @@ class ConversationSummary(BaseModel):
     title: str
     subject: Subject | None = None
     status: ConversationStatus
+    mode: ConversationMode = ConversationMode.TUTOR
+    agent_model: str | None = None
     message_count: int
     created_at: datetime
     updated_at: datetime
@@ -181,3 +187,50 @@ class HealthResponse(BaseModel):
     database: str
     llm_provider: str
     llm_model: str
+    agent_backend: str | None = None
+    agent_model: str | None = None
+    #: "claude_login" (your subscription via the Claude CLI) or "api_key".
+    agent_auth: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Agent + knowledge base
+# --------------------------------------------------------------------------- #
+class AgentConfigResponse(BaseModel):
+    """What the agent can do, for clients that render a model picker."""
+
+    name: str
+    backend: str
+    auth: str
+    default_model: str
+    models: list[str]
+    effort: str
+    thinking: str
+    tools: list[str]
+    mcp_servers: list[str]
+    max_budget_usd: float
+
+
+class DocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    filename: str
+    content_type: str | None = None
+    size_bytes: int
+    char_count: int
+    chunk_count: int
+    created_at: datetime
+
+
+class DocumentSearchRequest(BaseModel):
+    query: Annotated[str, Field(min_length=1, max_length=2000)]
+    top_k: Annotated[int | None, Field(default=None, ge=1, le=50)] = None
+
+
+class DocumentSearchHit(BaseModel):
+    document_id: uuid.UUID
+    filename: str
+    chunk_index: int
+    score: float = Field(description="Cosine similarity, higher is closer")
+    content: str

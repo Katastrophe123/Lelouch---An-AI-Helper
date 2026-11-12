@@ -1,4 +1,4 @@
-"""Streamlit frontend for the AI Homework Helper.
+"""Streamlit frontend for Lelouch (agent mode) and the AI Homework Helper (tutor mode).
 
 This is a **pure API client**. Compared with v1 it contains:
   * no LangChain / Hugging Face client
@@ -26,6 +26,7 @@ from api_client import ApiError, HomeworkHelperClient, Session  # noqa: E402
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 STATUS_BADGE = {
+    "completed": ("🤖", "Agent answer"),
     "verified": ("✅", "Self-checked"),
     "unverified": ("⚠️", "Unverified - please check"),
     "failed": ("❌", "Failed"),
@@ -38,7 +39,20 @@ NODE_LABEL = {
     "self_check": "Checking the answer",
     "explain": "Explaining step by step",
     "fallback": "Preparing a partial answer",
+    "agent_start": "Agent started",
+    "thinking": "Thinking",
+    "tool": "Using a tool",
+    "answer": "Answer",
 }
+
+MODE_LABEL = {"agent": "🤖 Agent (Claude)", "tutor": "📘 Tutor (self-checking)"}
+
+
+def step_label(step: dict[str, Any]) -> str:
+    """Agent steps carry their own label (e.g. the tool name); tutor ones do not."""
+    output = step.get("output") or {}
+    label = step.get("label") or output.get("label")
+    return str(label or NODE_LABEL.get(step["node"], step["node"]))
 
 
 @st.cache_resource
@@ -67,7 +81,11 @@ def render_status(message: dict[str, Any]) -> None:
     if message.get("fallback_reason"):
         bits.append(f"reason: `{message['fallback_reason']}`")
     if message.get("latency_ms") is not None:
-        bits.append(f"{message['latency_ms']} ms")
+        bits.append(f"{message['latency_ms'] / 1000:.1f} s")
+    trace = message.get("trace") or []
+    cost = (trace[-1].get("output") or {}).get("cost_usd") if trace else None
+    if cost:
+        bits.append(f"${cost:.3f} of agent credit")
     st.caption(" · ".join(bits))
 
 
@@ -78,12 +96,18 @@ def render_trace(message: dict[str, Any]) -> None:
         return
     with st.expander(f"How I got here ({len(trace)} steps)"):
         for step in trace:
-            label = NODE_LABEL.get(step["node"], step["node"])
+            label = step_label(step)
             marker = "✔" if step["status"] == "ok" else "✖"
+            detail = (step.get("output") or {}).get("input")
             st.markdown(
                 f"{marker} **{step['sequence']}. {label}** "
-                f"→ `{step.get('routing_decision') or 'end'}` "
-                f"({step['latency_ms']} ms)"
+                + (f"— {detail} " if detail else "")
+                + (
+                    f"→ `{step['routing_decision']}` "
+                    if step.get("routing_decision") and step["node"] != "answer"
+                    else ""
+                )
+                + f"({step['latency_ms']} ms)"
             )
             if step.get("error"):
                 st.error(step["error"], icon="⚠️")
@@ -103,17 +127,19 @@ def render_message(message: dict[str, Any]) -> None:
 # Panes
 # --------------------------------------------------------------------------- #
 def render_sign_in() -> None:
-    st.title("📘 AI Homework Helper")
+    st.title("🤖 Lelouch - An AI Helper")
     st.caption(
-        "A LangGraph tutor that solves your question, checks its own answer, "
-        "then explains it step by step."
+        "A Claude agent that researches, browses and reads your own documents - "
+        "plus the original self-checking homework tutor."
     )
 
     client = get_client()
     try:
         health = client.health()
+        agent = health.get("agent_model")
         st.success(
-            f"Backend is up · model `{health['llm_model']}` (provider `{health['llm_provider']}`)",
+            f"Backend is up · agent `{agent}` ({health.get('agent_auth')}) · "
+            f"tutor `{health['llm_model']}` ({health['llm_provider']})",
             icon="🔌",
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
@@ -123,7 +149,7 @@ def render_sign_in() -> None:
     with st.form("sign-in"):
         username = st.text_input("Your name", value="", max_chars=80)
         password = st.text_input("Shared password", type="password")
-        submitted = st.form_submit_button("Start studying")
+        submitted = st.form_submit_button("Sign in")
 
     if submitted:
         if not username.strip():
@@ -147,10 +173,33 @@ def render_sidebar(current: Session) -> str | None:
             st.rerun()
 
         st.divider()
+        mode = st.radio(
+            "New conversation type",
+            options=list(MODE_LABEL),
+            format_func=MODE_LABEL.__getitem__,
+            key="new_mode",
+        )
+        model = None
+        if mode == "agent":
+            config = agent_config(current)
+            if config:
+                model = st.selectbox(
+                    "Model",
+                    options=config["models"],
+                    index=config["models"].index(config["default_model"])
+                    if config["default_model"] in config["models"]
+                    else 0,
+                )
         if st.button("➕ New conversation", use_container_width=True, type="primary"):
-            created = client.create_conversation(current.access_token)
-            st.session_state["conversation_id"] = created["id"]
-            st.rerun()
+            try:
+                created = client.create_conversation(current.access_token, mode=mode, model=model)
+            except ApiError as exc:
+                st.error(exc.message)
+            else:
+                st.session_state["conversation_id"] = created["id"]
+                st.rerun()
+
+        render_documents(current)
 
         st.markdown("### Your conversations")
         try:
@@ -172,31 +221,87 @@ def render_sidebar(current: Session) -> str | None:
             "Conversations",
             options=list(options),
             index=list(options).index(selected),
-            format_func=lambda key: f"{options[key]['title']} ({options[key]['message_count']})",
+            format_func=lambda key: (
+                f"{'🤖' if options[key].get('mode') == 'agent' else '📘'} "
+                f"{options[key]['title']} ({options[key]['message_count']})"
+            ),
             label_visibility="collapsed",
         )
         st.session_state["conversation_id"] = choice
 
         st.divider()
         st.caption(f"{page['total']} conversation(s) stored in PostgreSQL")
-        st.toggle("Stream the explanation (SSE)", value=True, key="use_streaming")
+        st.toggle("Stream answers live (SSE)", value=True, key="use_streaming")
         return str(choice)
 
 
+def agent_config(current: Session) -> dict[str, Any] | None:
+    cached: dict[str, Any] | None = st.session_state.get("agent_config")
+    if cached is None:
+        try:
+            cached = get_client().agent_config(current.access_token)
+        except ApiError as exc:
+            st.caption(f"Agent unavailable: {exc.message}")
+            return None
+        st.session_state["agent_config"] = cached
+    return cached
+
+
+def render_documents(current: Session) -> None:
+    """Upload and manage the files the agent can search."""
+    client = get_client()
+    with st.expander("📚 My documents", expanded=False):
+        st.caption("Agent conversations can search these (PDF, Word, text, Markdown, CSV, code).")
+        uploads = st.file_uploader(
+            "Add documents",
+            accept_multiple_files=True,
+            key=f"uploader-{st.session_state.get('uploader_round', 0)}",
+            label_visibility="collapsed",
+        )
+        if uploads:
+            for upload in uploads:
+                try:
+                    with st.spinner(f"Reading {upload.name}…"):
+                        client.upload_document(
+                            current.access_token, upload.name, upload.getvalue(), upload.type
+                        )
+                    st.toast(f"Added {upload.name}", icon="📄")
+                except ApiError as exc:
+                    st.error(f"{upload.name}: {exc.message}")
+            # A fresh uploader key clears the widget so files are not re-sent.
+            st.session_state["uploader_round"] = st.session_state.get("uploader_round", 0) + 1
+            st.rerun()
+        try:
+            documents = client.list_documents(current.access_token)
+        except ApiError as exc:
+            st.error(exc.message)
+            return
+        if not documents:
+            st.caption("No documents yet.")
+        for document in documents:
+            left, right = st.columns([5, 1])
+            left.markdown(f"📄 {document['filename']}  \n`{document['chunk_count']} chunks`")
+            if right.button("🗑", key=f"del-{document['id']}", help="Delete"):
+                client.delete_document(current.access_token, document["id"])
+                st.rerun()
+
+
 def render_streamed_answer(current: Session, conversation_id: str, question: str) -> None:
-    """Consume the SSE stream, showing node progress then the explanation."""
+    """Consume the SSE stream, showing live steps then the answer."""
     client = get_client()
     with st.chat_message("assistant"):
         progress = st.empty()
         body = st.empty()
         chunks: list[str] = []
+        lines: list[str] = []
         final: dict[str, Any] = {}
         try:
             for event in client.ask_streaming(current.access_token, conversation_id, question):
                 if event.name == "step":
-                    label = NODE_LABEL.get(event.data["node"], event.data["node"])
+                    label = step_label(event.data)
                     marker = "✔" if event.data["status"] == "ok" else "✖"
-                    progress.caption(f"{marker} {label}…")
+                    lines.append(f"{marker} {label}")
+                    progress.caption("  \n".join(lines[-6:]) + " …")
                 elif event.name == "token":
                     chunks.append(event.data.get("text", ""))
                     body.markdown("".join(chunks))
@@ -225,7 +330,11 @@ def render_conversation(current: Session, conversation_id: str) -> None:
         return
 
     st.subheader(conversation["title"])
-    meta = [f"{conversation['message_count']} message(s)"]
+    agent_mode = conversation.get("mode") == "agent"
+    meta = [MODE_LABEL.get(conversation.get("mode", "tutor"), "")]
+    if conversation.get("agent_model"):
+        meta.append(f"`{conversation['agent_model']}`")
+    meta.append(f"{conversation['message_count']} message(s)")
     if conversation.get("subject"):
         meta.append(f"subject: `{conversation['subject']}`")
     st.caption(" · ".join(meta))
@@ -233,7 +342,11 @@ def render_conversation(current: Session, conversation_id: str) -> None:
     for message in conversation["messages"]:
         render_message(message)
 
-    question = st.chat_input("Ask a homework question…")
+    question = st.chat_input(
+        "Ask anything - research, browse a site, or ask about your documents…"
+        if agent_mode
+        else "Ask a homework question…"
+    )
     if not question:
         return
 
@@ -257,7 +370,7 @@ def render_conversation(current: Session, conversation_id: str) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="AI Homework Helper", page_icon="📘", layout="centered")
+    st.set_page_config(page_title="Lelouch - An AI Helper", page_icon="🤖", layout="centered")
 
     current = session()
     if current is None:

@@ -15,14 +15,18 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.graph import build_tutor_graph
+from app.assistant.runner import FakeAgentRunner
 from app.config import Settings
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.models import Conversation, User
 from app.db.repository import ConversationRepository, UserRepository
 from app.db.session import Database
+from app.knowledge.embeddings import HashingEmbedder
+from app.knowledge.service import KnowledgeService
 from app.llm.base import LLMClient
 from app.main import create_app
+from app.services.agent_service import AgentService
 from app.services.conversation_service import ConversationService
 from app.services.tutor_service import TutorService
 from tests.fakes import ScriptedLLMClient, happy_script
@@ -49,6 +53,13 @@ def settings() -> Settings:
         max_solve_retries=2,
         max_graph_steps=14,
         history_window=8,
+        agent_backend="fake",
+        agent_enable_playwright=False,
+        agent_mcp_config_path=None,
+        embedding_backend="hashing",
+        rag_chunk_chars=400,
+        rag_chunk_overlap=50,
+        max_upload_mb=1.0,
     )
 
 
@@ -145,11 +156,31 @@ def tutor_service(
 
 
 @pytest.fixture
+def knowledge_service(settings: Settings, database: Database) -> KnowledgeService:
+    return KnowledgeService(settings=settings, database=database, embedder=HashingEmbedder())
+
+
+@pytest.fixture
+def agent_runner() -> Any:
+    """The runner the app uses; tests override this fixture to script the agent."""
+    return FakeAgentRunner()
+
+
+@pytest.fixture
+def agent_service(
+    settings: Settings, knowledge_service: KnowledgeService, agent_runner: Any
+) -> AgentService:
+    return AgentService(settings=settings, runner=agent_runner, knowledge=knowledge_service)
+
+
+@pytest.fixture
 def app(
     settings: Settings,
     database: Database,
     happy_llm: ScriptedLLMClient,
     fake_sleep: Any,
+    knowledge_service: KnowledgeService,
+    agent_service: AgentService,
 ) -> Iterator[FastAPI]:
     """App instance wired to the test database and a scripted LLM.
 
@@ -162,6 +193,8 @@ def app(
     application.state.tutor_service = TutorService(
         settings=settings, llm=happy_llm, sleep=fake_sleep
     )
+    application.state.knowledge_service = knowledge_service
+    application.state.agent_service = agent_service
     yield application
 
 

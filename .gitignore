@@ -36,3 +36,7 @@ reports/
 .idea/
 .vscode/
 .DS_Store
+
+# Agent mode
+mcp_servers.json
+workspace/

@@ -12,7 +12,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    JSON,
     Boolean,
     Float,
     ForeignKey,
@@ -26,7 +28,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampType, utcnow
-from app.models.enums import AnswerStatus, ConversationStatus, MessageRole
+from app.models.enums import AnswerStatus, ConversationMode, ConversationStatus, MessageRole
+
+#: Width of the stored embeddings. Must match ``EMBEDDING_MODEL``; the default
+#: BAAI/bge-small-en-v1.5 produces 384-dimensional vectors. Changing the model
+#: to one with a different width needs a migration.
+EMBEDDING_DIM = 384
+
+#: pgvector on PostgreSQL; plain JSON on SQLite so the tests need no server.
+#: ``with_variant`` keeps pgvector's comparator, so ``cosine_distance`` works.
+EmbeddingType = Vector(EMBEDDING_DIM).with_variant(JSON(), "sqlite")
 
 
 class User(Base):
@@ -40,6 +51,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(TimestampType, nullable=False, default=utcnow)
 
     conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    documents: Mapped[list[Document]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -62,6 +76,13 @@ class Conversation(Base):
         String(16), nullable=False, default=ConversationStatus.ACTIVE, index=True
     )
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ConversationMode.TUTOR, server_default="tutor"
+    )
+    # Agent mode only: the Claude model for this thread, and the Agent SDK
+    # session id that lets the next turn resume with full context.
+    agent_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TimestampType, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         TimestampType, nullable=False, default=utcnow, onupdate=utcnow
@@ -136,3 +157,57 @@ class Message(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Message id={self.id} role={self.role} seq={self.sequence}>"
+
+
+class Document(Base):
+    """A file the user uploaded to their knowledge base."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TimestampType, nullable=False, default=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="documents")
+    chunks: Mapped[list[DocumentChunk]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Document id={self.id} filename={self.filename}>"
+
+
+class DocumentChunk(Base):
+    """One embedded passage of a document, the unit of retrieval."""
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Denormalised from the document so search is one indexed, user-scoped scan.
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(EmbeddingType, nullable=False)
+
+    document: Mapped[Document] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_document_chunks_position"),
+        # Approximate nearest-neighbour index for cosine search (PostgreSQL).
+        Index(
+            "ix_document_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )

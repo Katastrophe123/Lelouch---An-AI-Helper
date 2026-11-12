@@ -1,13 +1,129 @@
-# AI Homework Helper — v2
+# Lelouch — An AI Helper (v3)
 
-[![CI](https://github.com/kanishksingh-arch/ai-homework-helper/actions/workflows/ci.yml/badge.svg)](https://github.com/kanishksingh-arch/ai-homework-helper/actions/workflows/ci.yml)
+[![CI](https://github.com/Katastrophe123/Lelouch---An-AI-Helper/actions/workflows/ci.yml/badge.svg)](https://github.com/Katastrophe123/Lelouch---An-AI-Helper/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 [![Checked with mypy](https://img.shields.io/badge/types-mypy-blue.svg)](https://mypy-lang.org/)
 
-A tutoring agent that **solves your homework question, checks its own answer,
-and only then explains it** — behind an async **FastAPI** backend with
-**PostgreSQL** persistence, with **Streamlit** reduced to a pure API client.
+A personal AI assistant with two engines behind one async **FastAPI** backend,
+**PostgreSQL** persistence and a **Streamlit** client:
+
+- **🤖 Agent mode (new in v3)** — Claude **Opus 5.5 / Fable 5.2** through the
+  **Claude Agent SDK**: adaptive deep thinking, web research with a parallel
+  researcher subagent, a real **Playwright** browser, any **MCP servers** you
+  connect, and search over **your own documents** (RAG with pgvector).
+- **📘 Tutor mode (v2)** — a LangGraph tutor that **solves your homework
+  question, checks its own answer, and only then explains it**.
+
+---
+
+## Agent mode (v3)
+
+### What it can do
+
+| Capability | How |
+|---|---|
+| Deep thinking | Adaptive extended thinking, `AGENT_EFFORT` from `low` to `max` |
+| Research | `WebSearch` + `WebFetch`, plus a `researcher` subagent the agent fans sub-questions out to |
+| Planning | The engine's task-list tools, so long jobs are planned and ticked off |
+| Browser | [Playwright MCP](https://github.com/microsoft/playwright-mcp): navigate, click, type, read JS-heavy pages, screenshots |
+| Your tools | Any MCP server in `mcp_servers.json` (same shape as Claude Code's `.mcp.json`) |
+| Your data | Upload PDF / Word / text / Markdown / CSV / code; the agent calls `search_my_documents` and cites file names |
+| Memory | Each conversation resumes its Agent SDK session, so follow-ups keep full context |
+
+"Trained on your data" is done with retrieval, not fine-tuning: Claude models
+cannot be fine-tuned, so uploads are chunked, embedded locally
+(`BAAI/bge-small-en-v1.5`, no API cost) and searched at question time.
+
+### How it signs in, and what it costs
+
+The API launches the Claude engine bundled with `claude-agent-sdk`, which
+signs in exactly like the `claude` CLI on the same machine:
+
+- **Your Claude subscription (this prototype).** Sign in once with `claude`
+  → `/login`. Agent usage is billed to your plan's monthly **Agent SDK
+  credit** (Max 20x: $200/month at API list prices). This is for **your own
+  use only**; Anthropic does not allow serving other people on subscription
+  credentials. The app never reads, copies or proxies the credential.
+- **An API key (the public version).** Set `ANTHROPIC_API_KEY` and the same
+  code bills that key instead. No code change.
+
+`GET /health` reports which one is active (`agent_auth`), and every answer's
+trace records its `cost_usd`. `AGENT_MAX_BUDGET_USD` (default $3) hard-caps any
+single turn.
+
+### Run it on your Mac
+
+The real agent has to run where your `claude` login is, so run the API
+natively; Docker is only needed for PostgreSQL.
+
+```bash
+# once
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,frontend]"
+claude            # then /login with your Claude account (skip if already signed in)
+cp .env.example .env
+cp mcp_servers.example.json mcp_servers.json   # optional; edit or empty it
+
+# each time
+docker compose up -d db                       # PostgreSQL + pgvector on port 5434
+export DATABASE_URL="postgresql+asyncpg://tutor:tutor@localhost:5434/tutor"
+alembic upgrade head
+uvicorn app.main:app --reload                 # terminal 1
+API_BASE_URL=http://localhost:8000 \
+  streamlit run frontend/streamlit_app.py     # terminal 2
+```
+
+In the UI, choose **🤖 Agent**, choose a model, and click **New
+conversation**. Add files under **📚 My documents**. Playwright needs
+Node.js 18+; the first browser call downloads it through `npx`.
+
+`docker compose up` on its own still works with no sign-in: inside a container
+it uses the offline demo agent (`AGENT_BACKEND=fake`).
+
+### Agent API
+
+```bash
+# an agent conversation (model must be in AGENT_MODELS)
+CONV=$(curl -sS -X POST localhost:8000/conversations -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"mode":"agent","model":"claude-fable-5-2"}' | jq -r .id)
+
+# add a document to your knowledge base
+curl -sS -X POST localhost:8000/documents -H "Authorization: Bearer $TOKEN" -F file=@notes.pdf
+
+# ask; the stream carries one `step` per thought / tool call, then tokens, then `done`
+curl -sS -N -X POST "localhost:8000/conversations/$CONV/messages/stream" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"content":"Compare what my notes say about Plassey with current sources"}'
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /agent/config` | Models, tools, MCP servers, auth mode, budget cap |
+| `POST /documents` · `GET /documents` · `DELETE /documents/{id}` | Manage your knowledge base |
+| `POST /documents/search` | The same search the agent uses, for debugging retrieval |
+
+Agent answers are stored with `answer_status: "completed"`, or `"failed"` with
+the reason. They are deliberately not called `verified`: the tutor's
+self-check graph does not run in agent mode.
+
+### Safety model
+
+The agent runs with `permission_mode="dontAsk"` and an explicit allow-list:
+web search/fetch, planning, subagents, Playwright, your configured MCP
+servers, and the documents tool. It has **no shell and no file-edit tools** on
+your machine, and `strict_mcp_config` / `setting_sources=[]` keep it from
+picking up your personal Claude Code settings. Each user gets their own working
+directory under `AGENT_WORKSPACE_DIR`. Document search is always scoped to the
+signed-in user.
+
+### Roadmap
+
+1. ✅ **Milestone 1:** agent core, research, Playwright, MCP, documents (RAG)
+2. **Milestone 2:** presentations (`.pptx` built by the agent in its workspace,
+   downloadable from the UI)
+3. **Milestone 3:** video (Remotion / ffmpeg motion graphics rendered to MP4)
+4. **Going public:** `ANTHROPIC_API_KEY`, real per-user auth, rate limits
 
 ---
 
@@ -150,7 +266,7 @@ frontend/                # Streamlit client - no LLM, no DB, no prompts
 legacy/                  # v1, for reference only
 alembic/                 # async migration environment + versions
 scripts/                 # seed_demo.py
-tests/                   # 270 tests, fully offline
+tests/                   # 366 tests, fully offline
 ```
 
 ---
@@ -180,8 +296,8 @@ migrations, and needs **no API key** — the default `LLM_PROVIDER=stub` is a
 deterministic offline client.
 
 ```bash
-git clone https://github.com/kanishksingh-arch/ai-homework-helper.git
-cd ai-homework-helper
+git clone https://github.com/Katastrophe123/Lelouch---An-AI-Helper.git
+cd Lelouch---An-AI-Helper
 cp .env.example .env          # optional; compose has safe local defaults
 docker compose up --build
 ```
@@ -398,17 +514,17 @@ The suite is **fully offline**: SQLite in-memory for persistence and scripted
 fake LLM clients for the model. No API key, no PostgreSQL, no network.
 
 ```bash
-pytest                                              # 270 tests
+pytest                                              # 366 tests
 pytest --cov=app --cov-report=term-missing          # coverage report
 pytest tests/test_graph_routing.py -v               # just the graph branches
 ruff check . && ruff format --check . && mypy app scripts frontend
 ```
 
-Measured on the committed code (Python 3.12.13, `pytest 9.1.1`):
+Measured on the committed code (Python 3.13, `pytest 9.1.1`):
 
 ```
-270 passed in 3.44s
-TOTAL  1559 statements   56 missed   96% coverage
+366 passed in 7.42s
+TOTAL  2489 statements   88 missed   96% coverage
 ```
 
 What the tests actually cover:

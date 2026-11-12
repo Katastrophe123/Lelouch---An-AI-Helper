@@ -59,7 +59,9 @@ class StreamEvent:
 class HomeworkHelperClient:
     """Thin, synchronous wrapper over the API (Streamlit runs synchronously)."""
 
-    def __init__(self, base_url: str, *, timeout: float = 120.0) -> None:
+    def __init__(self, base_url: str, *, timeout: float = 900.0) -> None:
+        # Agent turns can run for minutes (research, browsing), hence the
+        # generous default; the SSE stream also carries keep-alive pings.
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
 
@@ -91,13 +93,21 @@ class HomeworkHelperClient:
         )
 
     def create_conversation(
-        self, token: str, *, title: str | None = None, subject: str | None = None
+        self,
+        token: str,
+        *,
+        title: str | None = None,
+        subject: str | None = None,
+        mode: str = "tutor",
+        model: str | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {}
+        body: dict[str, Any] = {"mode": mode}
         if title:
             body["title"] = title
         if subject:
             body["subject"] = subject
+        if model:
+            body["model"] = model
         with self._client(token) as client:
             return self._unwrap(client.post("/conversations", json=body))  # type: ignore[no-any-return]
 
@@ -112,6 +122,28 @@ class HomeworkHelperClient:
     def get_conversation(self, token: str, conversation_id: str) -> dict[str, Any]:
         with self._client(token) as client:
             return self._unwrap(client.get(f"/conversations/{conversation_id}"))  # type: ignore[no-any-return]
+
+    def agent_config(self, token: str) -> dict[str, Any]:
+        with self._client(token) as client:
+            return self._unwrap(client.get("/agent/config"))  # type: ignore[no-any-return]
+
+    # --- documents --------------------------------------------------------
+    def list_documents(self, token: str) -> list[dict[str, Any]]:
+        with self._client(token) as client:
+            return self._unwrap(client.get("/documents"))  # type: ignore[no-any-return]
+
+    def upload_document(
+        self, token: str, filename: str, data: bytes, content_type: str | None = None
+    ) -> dict[str, Any]:
+        files = {"file": (filename, data, content_type or "application/octet-stream")}
+        with self._client(token) as client:
+            return self._unwrap(client.post("/documents", files=files))  # type: ignore[no-any-return]
+
+    def delete_document(self, token: str, document_id: str) -> None:
+        with self._client(token) as client:
+            response = client.delete(f"/documents/{document_id}")
+            if response.status_code >= 400:
+                raise ApiError.from_response(response)
 
     def ask(self, token: str, conversation_id: str, content: str) -> dict[str, Any]:
         with self._client(token) as client:
