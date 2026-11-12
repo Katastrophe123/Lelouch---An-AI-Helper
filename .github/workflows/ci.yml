@@ -58,12 +58,31 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
 
+  web:
+    name: Web app (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
   migrations:
     name: Alembic migrations against PostgreSQL
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector is required by the knowledge-base migration.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: tutor
           POSTGRES_PASSWORD: tutor
@@ -115,7 +134,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Start the stack (db + api + ui)
+      - name: Start the stack (db + api, which also serves the web app)
         run: docker compose up -d --build --wait --wait-timeout 300
 
       - name: Smoke-test the API
@@ -152,8 +171,11 @@ jobs:
           grep -q 'event: step' /tmp/stream.txt
           grep -q 'event: done' /tmp/stream.txt
 
-      - name: Smoke-test the Streamlit frontend
-        run: curl -fsS http://localhost:8501/_stcore/health | grep -q ok
+      - name: Smoke-test the web app
+        run: |
+          curl -fsS http://localhost:8000/ | grep -q '<div id="root">'
+          ASSET=$(curl -fsS http://localhost:8000/ | grep -o '/assets/index-[^"]*\.js' | head -1)
+          curl -fsS "http://localhost:8000$ASSET" -o /dev/null
 
       - name: Dump logs on failure
         if: failure()

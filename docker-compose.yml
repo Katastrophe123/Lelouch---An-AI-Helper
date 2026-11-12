@@ -57,7 +57,11 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
+  # The previous Streamlit client, kept for reference. The web app is now
+  # served by the api service at http://localhost:8000.
+  # Start it with: docker compose --profile legacy-ui up
   ui:
+    profiles: ["legacy-ui"]
     build:
       context: .
       dockerfile: Dockerfile.frontend

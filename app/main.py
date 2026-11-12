@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api.errors import register_exception_handlers
@@ -116,7 +118,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent.router)
     app.include_router(documents.router)
 
+    mount_web_app(app, resolved.web_dist_dir)
     return app
+
+
+def mount_web_app(app: FastAPI, dist_dir: str | None) -> bool:
+    """Serve the built web app at ``/``, after every API route.
+
+    Mounted last, so API paths always win. The app uses hash routing
+    (``/#/c/<id>``), so no server-side fallback route is needed.
+    """
+    if not dist_dir:
+        return False
+    dist = Path(dist_dir)
+    if not (dist / "index.html").is_file():
+        logger.info("web_app_not_built", path=str(dist))
+        return False
+    app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    return True
 
 
 app = create_app()

@@ -15,6 +15,11 @@ A personal AI assistant with two engines behind one async **FastAPI** backend,
 - **📘 Tutor mode (v2)** — a LangGraph tutor that **solves your homework
   question, checks its own answer, and only then explains it**.
 
+The **web app** (`web/`, React + TypeScript) shows the agent working live: a
+gold activity rail lists each thought, web search, browser action and document
+lookup as it happens, then folds away under the answer. Documents can be
+dragged straight into the chat.
+
 ---
 
 ## Agent mode (v3)
@@ -65,21 +70,27 @@ claude            # then /login with your Claude account (skip if already signed
 cp .env.example .env
 cp mcp_servers.example.json mcp_servers.json   # optional; edit or empty it
 
+(cd web && npm install && npm run build)      # build the web app
+
 # each time
 docker compose up -d db                       # PostgreSQL + pgvector on port 5434
 export DATABASE_URL="postgresql+asyncpg://tutor:tutor@localhost:5434/tutor"
 alembic upgrade head
-uvicorn app.main:app --reload                 # terminal 1
-API_BASE_URL=http://localhost:8000 \
-  streamlit run frontend/streamlit_app.py     # terminal 2
+uvicorn app.main:app --reload                 # then open http://localhost:8000
 ```
 
-In the UI, choose **🤖 Agent**, choose a model, and click **New
-conversation**. Add files under **📚 My documents**. Playwright needs
-Node.js 18+; the first browser call downloads it through `npx`.
+Sign in, keep **Agent** selected in the message box, pick a model and ask.
+Add files from **Your documents** in the sidebar, or drop them onto the chat.
+Playwright needs Node.js 18+; the first browser call downloads it through
+`npx`.
+
+Working on the frontend itself? Run `npm run dev` in `web/` and open
+<http://localhost:5173>: it hot-reloads and proxies API calls to port 8000.
+The old Streamlit client still works (`streamlit run frontend/streamlit_app.py`).
 
 `docker compose up` on its own still works with no sign-in: inside a container
-it uses the offline demo agent (`AGENT_BACKEND=fake`).
+it uses the offline demo agent (`AGENT_BACKEND=fake`). The web app is at
+<http://localhost:8000>.
 
 ### Agent API
 
@@ -260,13 +271,14 @@ app/                     # FastAPI backend
 ├── services/            # TutorService (write side), ConversationService (read side)
 ├── config.py            # pydantic-settings
 └── logging_config.py
-frontend/                # Streamlit client - no LLM, no DB, no prompts
+web/                     # React + TypeScript web app, served by FastAPI at /
+frontend/                # previous Streamlit client - no LLM, no DB, no prompts
 ├── streamlit_app.py
 └── api_client.py
 legacy/                  # v1, for reference only
 alembic/                 # async migration environment + versions
 scripts/                 # seed_demo.py
-tests/                   # 366 tests, fully offline
+tests/                   # 369 backend tests, fully offline (+ 9 web tests)
 ```
 
 ---
@@ -302,7 +314,7 @@ cp .env.example .env          # optional; compose has safe local defaults
 docker compose up --build
 ```
 
-- UI: <http://localhost:8501> (sign in with any name; password `homework`)
+- Web app: <http://localhost:8000> (sign in with any name; password `homework`)
 - API docs: <http://localhost:8000/docs>
 - PostgreSQL: `localhost:5434`
 
@@ -514,7 +526,8 @@ The suite is **fully offline**: SQLite in-memory for persistence and scripted
 fake LLM clients for the model. No API key, no PostgreSQL, no network.
 
 ```bash
-pytest                                              # 366 tests
+pytest                                              # 369 tests
+(cd web && npm test)                                # 9 web tests
 pytest --cov=app --cov-report=term-missing          # coverage report
 pytest tests/test_graph_routing.py -v               # just the graph branches
 ruff check . && ruff format --check . && mypy app scripts frontend
@@ -523,8 +536,8 @@ ruff check . && ruff format --check . && mypy app scripts frontend
 Measured on the committed code (Python 3.13, `pytest 9.1.1`):
 
 ```
-366 passed in 7.42s
-TOTAL  2489 statements   88 missed   96% coverage
+369 passed in 8.7s
+TOTAL  2502 statements   87 missed   97% coverage
 ```
 
 What the tests actually cover:

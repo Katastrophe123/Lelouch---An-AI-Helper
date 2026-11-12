@@ -60,6 +60,7 @@ def settings() -> Settings:
         rag_chunk_chars=400,
         rag_chunk_overlap=50,
         max_upload_mb=1.0,
+        web_dist_dir=None,
     )
 
 

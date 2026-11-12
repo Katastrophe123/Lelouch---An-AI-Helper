@@ -78,6 +78,8 @@ class TestTurnRecorder:
         steps = [e for e in events if e["event"] == "step"]
         assert [e["node"] for e in steps] == [s.node.value for s in recorder.steps]
         assert steps[2]["label"] == "WebSearch"
+        assert steps[2]["output"]["input"] == "Battle of Plassey date"
+        assert steps[0]["output"]["model"] == "claude-opus-5-5"
 
     async def test_subagent_activity_is_traced_but_not_streamed(self) -> None:
         recorder, events = await record(

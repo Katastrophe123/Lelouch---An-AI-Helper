@@ -97,6 +97,9 @@ class Settings(BaseSettings):
 
     # --- Frontend ---------------------------------------------------------
     api_base_url: str = "http://localhost:8000"
+    # The built web app (``cd web && npm run build``). When the folder exists,
+    # the API serves it at ``/`` so the whole product runs on one port.
+    web_dist_dir: str | None = "web/dist"
 
     @field_validator("log_level")
     @classmethod

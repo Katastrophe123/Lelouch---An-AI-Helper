@@ -1,6 +1,6 @@
 [project]
 name = "ai-homework-helper"
-version = "3.0.0"
+version = "3.1.0"
 description = "Lelouch: a Claude Agent SDK assistant (research, browser, MCP, your documents) plus a self-checking LangGraph tutor, behind FastAPI + PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.11"

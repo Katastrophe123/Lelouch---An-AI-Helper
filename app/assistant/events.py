@@ -113,6 +113,10 @@ class TurnRecorder:
                 "decision": record.routing_decision.value if record.routing_decision else None,
                 "latency_ms": record.latency_ms,
                 "label": record.output.get("label"),
+                # Already truncated previews, so clients can describe the step
+                # live ("Searched the web: <query>") without waiting for the trace.
+                "output": record.output,
+                "error": record.error,
             }
         )
 

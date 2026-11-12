@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1
-# Backend image: FastAPI + LangGraph + Alembic.
+# Backend image: FastAPI + LangGraph + Alembic, plus the built web app.
+
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
 
 FROM python:3.12-slim AS builder
 
@@ -37,6 +44,7 @@ COPY --chown=appuser:appuser alembic.ini ./
 COPY --chown=appuser:appuser alembic ./alembic
 COPY --chown=appuser:appuser app ./app
 COPY --chown=appuser:appuser scripts ./scripts
+COPY --from=web --chown=appuser:appuser /web/dist ./web/dist
 COPY --chown=appuser:appuser docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

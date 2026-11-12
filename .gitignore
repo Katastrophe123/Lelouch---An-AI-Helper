@@ -40,3 +40,7 @@ reports/
 # Agent mode
 mcp_servers.json
 workspace/
+
+# Web app
+web/node_modules/
+web/dist/

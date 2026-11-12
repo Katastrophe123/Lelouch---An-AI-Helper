@@ -19,3 +19,5 @@ reports
 *.sqlite3
 .DS_Store
 legacy
+web/node_modules
+web/dist
